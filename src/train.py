@@ -176,7 +176,7 @@ def train(config: Config) -> None:
 
     # AMP scaler
     use_amp = config.training.amp and device.type == "cuda"
-    scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler  = torch.amp.GradScaler('cuda', enabled=use_amp)
 
     # --- data ---
     train_loader, val_loader = build_dataloaders(config, model)

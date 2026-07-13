@@ -210,4 +210,9 @@ def split_samples_by_embryo(
     train_paths, val_paths = [], []
     for eid, paths in by_embryo.items():
         (val_paths if eid in val_embryos else train_paths).extend(paths)
+
+    # Ensure training set has more samples than validation set
+    if len(train_paths) < len(val_paths):
+        train_paths, val_paths = val_paths, train_paths
+
     return train_paths, val_paths
