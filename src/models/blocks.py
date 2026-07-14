@@ -70,36 +70,65 @@ def compute_output_shape(
     return shape
 
 
-class ConvBlock(nn.Module):
-    """Single valid Conv3d + GroupNorm + ReLU."""
-
-    def __init__(self, in_ch: int, out_ch: int, kernel_size: tuple[int, int, int]):
+class Conv4d(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int, kernel_size: tuple[int, int, int, int]):
         super().__init__()
+        self.kt = kernel_size[0]
+        self.convs = nn.ModuleList([
+            nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size[1:], padding=0)
+            for _ in range(self.kt)
+        ])
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x is (N, C, T, Z, Y, X)
+        out = []
+        for t in range(x.size(2) - self.kt + 1):
+            t_out = sum(self.convs[i](x[:, :, t+i]) for i in range(self.kt))
+            out.append(t_out)
+        return torch.stack(out, dim=2)
+
+
+class ConvBlock(nn.Module):
+    """Single valid Conv + GroupNorm + ReLU. Supports 4D (T,Z,Y,X) or 3D (Z,Y,X) kernels."""
+
+    def __init__(self, in_ch: int, out_ch: int, kernel_size: tuple[int, ...]):
+        super().__init__()
+        self.kernel_size = kernel_size
         groups = min(8, out_ch)
         while out_ch % groups != 0 and groups > 1:
             groups -= 1
-        self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=0)
+            
+        if len(kernel_size) == 4:
+            self.conv = Conv4d(in_ch, out_ch, kernel_size)
+        else:
+            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=0)
+            
         self.norm = nn.GroupNorm(groups, out_ch)
         self.act = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if len(self.kernel_size) == 3 and x.dim() == 6:
+            # Transition from 4D to 3D when T dimension has collapsed to 1
+            assert x.size(2) == 1, f"T dimension must be 1 to apply 3D conv, got {x.size(2)}"
+            x = x.squeeze(2)
         return self.act(self.norm(self.conv(x)))
 
 
 class DoubleConv(nn.Module):
-    """Two valid convolutions; anisotropic kernel on level 0."""
+    """Two valid convolutions. Allows specifying two separate kernels."""
 
     def __init__(
         self,
         in_ch: int,
         out_ch: int,
-        kernel_size: tuple[int, int, int] = (3, 3, 3),
+        kernel_size1: tuple[int, ...] = (3, 3, 3),
+        kernel_size2: tuple[int, ...] = (3, 3, 3),
     ):
         super().__init__()
         mid = out_ch
         self.block = nn.Sequential(
-            ConvBlock(in_ch, mid, kernel_size),
-            ConvBlock(mid, out_ch, kernel_size),
+            ConvBlock(in_ch, mid, kernel_size1),
+            ConvBlock(mid, out_ch, kernel_size2),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -107,13 +136,18 @@ class DoubleConv(nn.Module):
 
 
 class Downsample(nn.Module):
-    """MaxPool with anisotropic factors."""
+    """MaxPool with anisotropic factors. Supports 5D or 6D (applying over spatial only)."""
 
     def __init__(self, factors: tuple[int, int, int]):
         super().__init__()
         self.pool = nn.MaxPool3d(kernel_size=factors, stride=factors)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 6:
+            N, C, T, Z, Y, X = x.shape
+            x_reshaped = x.view(N * T, C, Z, Y, X)
+            out = self.pool(x_reshaped)
+            return out.view(N, C, T, out.size(2), out.size(3), out.size(4))
         return self.pool(x)
 
 
@@ -130,15 +164,31 @@ class UpsampleBlock(nn.Module):
 
 def center_crop_spatial(
     tensor: torch.Tensor,
-    target_shape: tuple[int, int, int],
+    target_shape: tuple[int, ...],
 ) -> torch.Tensor:
-    """Center-crop (D, H, W) spatial dims of (B, C, D, H, W) tensor."""
-    _, _, d, h, w = tensor.shape
-    td, th, tw = target_shape
-    dz = (d - td) // 2
-    dy = (h - th) // 2
-    dx = (w - tw) // 2
-    return tensor[:, :, dz : dz + td, dy : dy + th, dx : dx + tw]
+    """Center-crop spatial dims of 4D, 5D or 6D tensor."""
+    if tensor.dim() == 4:
+        th, tw = target_shape[-2:]
+        _, _, h, w = tensor.shape
+        dy = (h - th) // 2
+        dx = (w - tw) // 2
+        return tensor[:, :, dy : dy + th, dx : dx + tw]
+    elif tensor.dim() == 5:
+        td, th, tw = target_shape[-3:]
+        _, _, d, h, w = tensor.shape
+        dz = (d - td) // 2
+        dy = (h - th) // 2
+        dx = (w - tw) // 2
+        return tensor[:, :, dz : dz + td, dy : dy + th, dx : dx + tw]
+    elif tensor.dim() == 6:
+        td, th, tw = target_shape[-3:]
+        _, _, _, d, h, w = tensor.shape
+        dz = (d - td) // 2
+        dy = (h - th) // 2
+        dx = (w - tw) // 2
+        return tensor[:, :, :, dz : dz + td, dy : dy + th, dx : dx + tw]
+    else:
+        raise ValueError(f"Unsupported tensor dimension for center_crop_spatial: {tensor.dim()}")
 
 
 def crop_tensor_to_shape(

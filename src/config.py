@@ -12,7 +12,8 @@ import yaml
 @dataclass
 class ModelConfig:
     in_channels: int = 1
-    base_features: int = 16
+    base_features: int = 12
+    feature_multiplier: float = 3.0
     downsample_factors: list[list[int]] = field(
         default_factory=lambda: [[1, 2, 2], [2, 2, 2], [2, 2, 2]]
     )
@@ -51,6 +52,8 @@ class TrainingConfig:
     num_workers: int = 4
     val_embryo_fraction: float = 0.2
     seed: int = 42
+    weight_decay: float = 1e-4
+    patience: int = 20
 
 
 @dataclass

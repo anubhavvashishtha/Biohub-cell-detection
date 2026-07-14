@@ -32,9 +32,11 @@ class NMS3D(nn.Module):
         Returns:
             Boolean mask of local maxima, same spatial shape as input.
         """
+        was_4d = False
         if heatmap.dim() == 4:
             heatmap = heatmap.unsqueeze(1)
+            was_4d = True
 
         pooled = self.pool(heatmap)
         maxima = (heatmap == pooled) & (heatmap > self.threshold)
-        return maxima.squeeze(1) if maxima.shape[1] == 1 else maxima
+        return maxima.squeeze(1) if was_4d else maxima

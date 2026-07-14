@@ -53,8 +53,9 @@ def _extract_patch_slices(
 
 def _crop_with_slices(volume: np.ndarray, gt: GroundTruth, slices: tuple[slice, slice, slice]):
     zsl, ysl, xsl = slices
+    vol = volume[:, zsl, ysl, xsl] if volume.ndim == 4 else crop_volume(volume, slices)
     return (
-        crop_volume(volume, slices),
+        vol,
         GroundTruth(
             cell_indicator=gt.cell_indicator[zsl, ysl, xsl],
             cell_center=gt.cell_center[zsl, ysl, xsl],
@@ -132,12 +133,18 @@ class BiohubDetectionDataset(Dataset):
         assert graph is not None
 
         t = entry.timepoint
-        frame = normalize_volume(
-            volume.get_frame(t),
-            mode=self.data_cfg.normalize_mode,
-        )
+        
+        frames = []
+        for i in range(-3, 4):
+            # Duplicate boundary frames (e.g. at t=0, it will use t=0 for i=-3, -2, -1)
+            t_offset = max(0, min(t + i, volume.num_timepoints - 1))
+            f = normalize_volume(volume.get_frame(t_offset), mode=self.data_cfg.normalize_mode)
+            frames.append(f)
+            
+        frame = np.stack(frames, axis=0) # Shape: (7, Z, Y, X)
+        
         nodes = graph.nodes_at(t)
-        full_shape = frame.shape
+        full_shape = frame.shape[1:] # Spatial shape
         gt = generate_ground_truth(
             full_shape,
             nodes,
@@ -162,7 +169,7 @@ class BiohubDetectionDataset(Dataset):
             frame, gt = self.augmentor(frame, gt)
 
         if self.output_shape is not None:
-            crop_slices = get_crop_slices(frame.shape, self.output_shape)
+            crop_slices = get_crop_slices(frame.shape[1:], self.output_shape)
             gt = crop_ground_truth(gt, crop_slices)
 
         return {

@@ -12,9 +12,11 @@ Improvements over original skeleton:
 from __future__ import annotations
 
 import argparse
+import csv
 import random
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -109,7 +111,10 @@ def validate(
     device: torch.device,
 ) -> dict[str, float]:
     model.eval()
-    totals: dict[str, float] = {"loss": 0.0, "loss_ci": 0.0, "loss_mv": 0.0}
+    totals: dict[str, float] = {
+        "loss": 0.0, "loss_ci": 0.0, "loss_mv": 0.0,
+        "loss_la": 0.0, "loss_lb": 0.0, "alpha": 0.0
+    }
     n = 0
     for batch in loader:
         volume  = batch["volume"].to(device)
@@ -122,7 +127,8 @@ def validate(
         losses  = loss_fn(outputs, targets)
         bs = volume.size(0)
         for k in totals:
-            totals[k] += float(losses[k]) * bs
+            if k in losses:
+                totals[k] += float(losses[k]) * bs
         n += bs
     model.train()
     return {k: v / max(n, 1) for k, v in totals.items()}
@@ -132,7 +138,7 @@ def validate(
 # Training
 # ---------------------------------------------------------------------------
 
-def train(config: Config) -> None:
+def train(config: Config, resume_path: str | None = None) -> None:
     set_seed(config.training.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
@@ -159,7 +165,11 @@ def train(config: Config) -> None:
     )
 
     # --- optimizer + schedulers ---
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.training.lr)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config.training.lr,
+        weight_decay=config.training.weight_decay,
+    )
 
     # Cosine annealing over the non-SWA phase
     n_non_swa_epochs = max(1, config.training.swa_start_epoch)
@@ -185,11 +195,27 @@ def train(config: Config) -> None:
 
     global_step = 0
     best_val    = float("inf")
+    val_checks_without_improvement = 0
+    start_epoch = 0
+
+    if resume_path:
+        print(f"Resuming from checkpoint: {resume_path}")
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        if "scaler" in ckpt and use_amp:
+            scaler.load_state_dict(ckpt["scaler"])
+        start_epoch = ckpt.get("epoch", -1) + 1
+        global_step = ckpt.get("step", 0)
+        best_val = ckpt.get("best_val", float("inf"))
+        val_checks_without_improvement = ckpt.get("val_checks_without_improvement", 0)
+        print(f"Resumed at epoch {start_epoch}, step {global_step}. Best val: {best_val:.4f}, Patience: {val_checks_without_improvement}/{config.training.patience}")
 
     # ------------------------------------------------------------------ #
     #  Main training loop                                                  #
     # ------------------------------------------------------------------ #
-    for epoch in range(config.training.epochs):
+    for epoch in range(start_epoch, config.training.epochs):
         loss_fn.set_epoch(epoch)
         model.train()
 
@@ -199,10 +225,11 @@ def train(config: Config) -> None:
             print(f"SWA activated at epoch {epoch + 1}")
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.training.epochs}")
-        epoch_loss = 0.0
-        n_batches  = 0
+        # Training metrics accumulators
+        epoch_train_losses = {"loss": 0.0, "loss_ci": 0.0, "loss_mv": 0.0, "loss_la": 0.0, "loss_lb": 0.0, "alpha": 0.0}
 
         for batch in pbar:
+            loss_fn.current_step = global_step
             volume  = batch["volume"].to(device)
             targets = {
                 "cell_indicator":   batch["cell_indicator"].to(device),
@@ -230,7 +257,10 @@ def train(config: Config) -> None:
             if swa_started:
                 swa_model.update_parameters(model)
 
-            epoch_loss += float(losses["loss"])
+            for k in epoch_train_losses:
+                if k in losses:
+                    epoch_train_losses[k] += float(losses[k])
+                    
             n_batches  += 1
             global_step += 1
 
@@ -242,20 +272,92 @@ def train(config: Config) -> None:
             )
 
             # Step-level validation
-            if global_step % config.training.val_every == 0:
+            is_last_step = (n_batches == len(train_loader))
+            if global_step % config.training.val_every == 0 or is_last_step:
                 val_m = validate(model, loss_fn, val_loader, device)
+                latest_val_m = val_m
                 print(
                     f"\n  [step {global_step}] val loss={val_m['loss']:.4f} "
-                    f"ci={val_m['loss_ci']:.4f} mv={val_m['loss_mv']:.4f}"
+                    f"ci={val_m['loss_ci']:.4f} mv={val_m['loss_mv']:.4f} "
+                    f"la={val_m.get('loss_la', 0.0):.4f} lb={val_m.get('loss_lb', 0.0):.4f} alpha={val_m.get('alpha', 0.0):.4f}"
                 )
                 if val_m["loss"] < best_val:
                     best_val = val_m["loss"]
-                    _save_checkpoint(model, config, epoch, global_step, ckpt_dir / "best.pt")
+                    val_checks_without_improvement = 0
+                    _save_checkpoint(
+                        model, optimizer, scaler, config, epoch, global_step, best_val, val_checks_without_improvement, ckpt_dir / "best.pt"
+                    )
                     print(f"  ↑ New best val loss: {best_val:.4f}")
+                else:
+                    val_checks_without_improvement += 1
+                    print(f"  - No improvement for {val_checks_without_improvement} val checks")
+                    
+                if config.training.patience > 0 and val_checks_without_improvement >= config.training.patience:
+                    print(f"Early stopping triggered after {val_checks_without_improvement} checks without improvement.")
+                    break
+
+        if config.training.patience > 0 and val_checks_without_improvement >= config.training.patience:
+            break
 
         # ---- end of epoch ----
-        avg_loss = epoch_loss / max(n_batches, 1)
-        print(f"Epoch {epoch + 1} avg train loss: {avg_loss:.4f}")
+        avg_train = {k: v / max(n_batches, 1) for k, v in epoch_train_losses.items()}
+        print(f"\nEpoch {epoch + 1} Summary:")
+        print(f"  Train: Loss={avg_train['loss']:.4f}, CI={avg_train['loss_ci']:.4f}, MV={avg_train['loss_mv']:.4f}, LA={avg_train['loss_la']:.4f}, LB={avg_train['loss_lb']:.4f}, Alpha={avg_train['alpha']:.4f}")
+        print(f"  Val  : Loss={latest_val_m['loss']:.4f}, CI={latest_val_m['loss_ci']:.4f}, MV={latest_val_m['loss_mv']:.4f}, LA={latest_val_m.get('loss_la', 0.0):.4f}, LB={latest_val_m.get('loss_lb', 0.0):.4f}, Alpha={latest_val_m.get('alpha', 0.0):.4f}")
+
+        # Save to CSV
+        csv_path = ckpt_dir / "metrics.csv"
+        write_header = not csv_path.exists()
+        with open(csv_path, mode="a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(["epoch", "train_loss", "train_ci", "train_mv", "train_la", "train_lb", "train_alpha", 
+                                 "val_loss", "val_ci", "val_mv", "val_la", "val_lb", "val_alpha"])
+            writer.writerow([
+                epoch + 1,
+                avg_train['loss'], avg_train['loss_ci'], avg_train['loss_mv'], avg_train['loss_la'], avg_train['loss_lb'], avg_train['alpha'],
+                latest_val_m['loss'], latest_val_m['loss_ci'], latest_val_m['loss_mv'], latest_val_m.get('loss_la', 0.0), latest_val_m.get('loss_lb', 0.0), latest_val_m.get('alpha', 0.0)
+            ])
+            
+        # Update metrics graph
+        try:
+            import pandas as pd
+            df = pd.read_csv(csv_path)
+            plt.figure(figsize=(12, 8))
+            plt.subplot(2, 2, 1)
+            plt.plot(df["epoch"], df["train_loss"], label="Train")
+            plt.plot(df["epoch"], df["val_loss"], label="Val")
+            plt.title("Total Loss")
+            plt.legend()
+            
+            plt.subplot(2, 2, 2)
+            plt.plot(df["epoch"], df["train_ci"], label="Train CI")
+            plt.plot(df["epoch"], df["val_ci"], label="Val CI")
+            plt.title("Cell Indicator Loss")
+            plt.legend()
+            
+            plt.subplot(2, 2, 3)
+            plt.plot(df["epoch"], df["train_la"], label="Train LA (Full)")
+            plt.plot(df["epoch"], df["train_lb"], label="Train LB (Maxima)")
+            plt.plot(df["epoch"], df["train_mv"], label="Train MV (Combined)", linestyle='--')
+            plt.title("Tracking Losses")
+            plt.legend()
+            
+            plt.subplot(2, 2, 4)
+            plt.plot(df["epoch"], df["train_alpha"], label="Alpha")
+            plt.title("Curriculum Alpha")
+            plt.legend()
+            
+            plt.tight_layout()
+            plt.savefig(ckpt_dir / "metrics.png")
+            plt.close()
+        except ImportError:
+            pass # Skip if pandas not installed
+            
+        # Always save last.pt for easy resuming with patience intact
+        _save_checkpoint(
+            model, optimizer, scaler, config, epoch, global_step, best_val, val_checks_without_improvement, ckpt_dir / "last.pt"
+        )
 
         # LR step
         if swa_started:
@@ -265,8 +367,10 @@ def train(config: Config) -> None:
 
         # Epoch-level checkpoint (every 10 epochs or last)
         if (epoch + 1) % 10 == 0 or epoch == config.training.epochs - 1:
-            _save_checkpoint(model, config, epoch, global_step,
-                             ckpt_dir / f"epoch_{epoch + 1:03d}.pt")
+            _save_checkpoint(
+                model, optimizer, scaler, config, epoch, global_step, best_val, val_checks_without_improvement,
+                ckpt_dir / f"epoch_{epoch + 1:03d}.pt"
+            )
 
     # ---- Post-training: SWA batch-norm update ----
     if swa_started:
@@ -289,17 +393,25 @@ def train(config: Config) -> None:
 
 def _save_checkpoint(
     model: CellTrackingUNet,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
     config: Config,
     epoch: int,
     step: int,
+    best_val: float,
+    val_checks_without_improvement: int,
     path: Path,
 ) -> None:
     torch.save(
         {
             "model":  model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scaler": scaler.state_dict() if scaler.is_enabled() else None,
             "config": _config_to_dict(config),
             "epoch":  epoch,
             "step":   step,
+            "best_val": best_val,
+            "val_checks_without_improvement": val_checks_without_improvement,
         },
         path,
     )
@@ -340,9 +452,15 @@ def main() -> None:
         default="configs/default.yaml",
         help="Path to YAML config",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume from (e.g., checkpoints/last.pt)",
+    )
     args   = parser.parse_args()
     config = Config.from_yaml(args.config)
-    train(config)
+    train(config, resume_path=args.resume)
 
 
 if __name__ == "__main__":

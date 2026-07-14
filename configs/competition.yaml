@@ -3,7 +3,8 @@
 
 model:
   in_channels: 1
-  base_features: 24          # ↑ from 16 — more expressive
+  base_features: 12          # 12 initial feature maps (from paper/repo)
+  feature_multiplier: 3.0    # Increase by factor of 3 at each level
   downsample_factors:
     - [1, 2, 2]              # level 0: no Z downsampling (anisotropic)
     - [2, 2, 2]              # level 1
@@ -39,6 +40,8 @@ training:
   num_workers: 4
   val_embryo_fraction: 0.15  # smaller val set → more training data
   seed: 0
+  weight_decay: 1.0e-4
+  patience: 5
 
 inference:
   max_link_distance_um: 7.0

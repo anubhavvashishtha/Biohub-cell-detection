@@ -118,7 +118,8 @@ def test_residual_model():
     m.eval()
 
     # Must use the full designed input shape
-    x = torch.randn(1, 1, 64, 256, 256)
+    # ResidualCellTrackingUNet expects a 6D tensor: (B, C, T, Z, Y, X)
+    x = torch.randn(1, 1, 7, 64, 256, 256)
     with torch.no_grad():
         out = m(x, inference=True)
 

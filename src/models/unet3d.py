@@ -39,12 +39,12 @@ class UNet3DEncoderDecoder(nn.Module):
         in_ch = in_channels
         for i, out_ch in enumerate(features):
             kernel = (1, 3, 3) if i == 0 else (3, 3, 3)
-            self.encoders.append(DoubleConv(in_ch, out_ch, kernel_size=kernel))
+            self.encoders.append(DoubleConv(in_ch, out_ch, kernel_size1=kernel, kernel_size2=kernel))
             self.pools.append(Downsample(self.downsample_factors[i]))
             in_ch = out_ch
 
         bottleneck_kernel = (3, 3, 3)
-        self.bottleneck = DoubleConv(features[-1], features[-1] * 2, kernel_size=bottleneck_kernel)
+        self.bottleneck = DoubleConv(features[-1], features[-1] * 2, kernel_size1=bottleneck_kernel, kernel_size2=bottleneck_kernel)
 
         self.upconvs = nn.ModuleList()
         self.decoders = nn.ModuleList()
@@ -53,7 +53,7 @@ class UNet3DEncoderDecoder(nn.Module):
             out_ch = features[i]
             self.upconvs.append(UpsampleBlock(self.downsample_factors[i]))
             self.decoders.append(
-                DoubleConv(dec_in + out_ch, out_ch, kernel_size=(1, 3, 3) if i == 0 else (3, 3, 3))
+                DoubleConv(dec_in + out_ch, out_ch, kernel_size1=(1, 3, 3) if i == 0 else (3, 3, 3), kernel_size2=(1, 3, 3) if i == 0 else (3, 3, 3))
             )
             dec_in = out_ch
 

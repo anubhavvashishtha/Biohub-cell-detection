@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 # Paths to include
-INCLUDES = ["src", "configs", "requirements.txt", "tests"]
+INCLUDES = ["src", "configs", "requirements.txt", "tests", "create_subset.py"]
 OUTPUT_ZIP = "biohub_code.zip"
 
 # Patterns/folders to exclude

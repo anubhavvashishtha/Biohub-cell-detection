@@ -46,7 +46,8 @@ def _random_flip(
     """
     assert axis in (0, 1, 2), f"axis must be 0, 1 or 2, got {axis}"
 
-    vol = np.flip(volume, axis=axis).copy()
+    v_axis = axis + 1 if volume.ndim == 4 else axis
+    vol = np.flip(volume, axis=v_axis).copy()
     ci  = np.flip(gt.cell_indicator, axis=axis).copy()
     cc  = np.flip(gt.cell_center,    axis=axis).copy()
     cm  = np.flip(gt.cell_mask,      axis=axis).copy()
@@ -64,7 +65,10 @@ def _transpose_yx(
     Swap Y ↔ X axes.  Volume: (Z, Y, X) → (Z, X, Y).
     Movement-vector channels: swap dy (channel 1) and dx (channel 2).
     """
-    vol = np.transpose(volume, (0, 2, 1)).copy()  # (Z, Y, X) → (Z, X, Y)
+    if volume.ndim == 4:
+        vol = np.transpose(volume, (0, 1, 3, 2)).copy()
+    else:
+        vol = np.transpose(volume, (0, 2, 1)).copy()  # (Z, Y, X) → (Z, X, Y)
     ci  = np.transpose(gt.cell_indicator, (0, 2, 1)).copy()
     cc  = np.transpose(gt.cell_center,    (0, 2, 1)).copy()
     cm  = np.transpose(gt.cell_mask,      (0, 2, 1)).copy()
@@ -99,9 +103,9 @@ def _shift_arrays(
     dx: int,
 ) -> tuple[np.ndarray, GroundTruth]:
     """Roll volume and GT by (dz, dy, dx) voxels, filling vacated regions with 0."""
-    sz, sy, sx = volume.shape
+    sz, sy, sx = volume.shape[-3:]
 
-    def _shift_3d(arr: np.ndarray) -> np.ndarray:
+    def _shift_spatial(arr: np.ndarray) -> np.ndarray:
         out = np.zeros_like(arr)
         z0s, z1s = max(0, -dz), min(sz, sz - dz)
         y0s, y1s = max(0, -dy), min(sy, sy - dy)
@@ -116,13 +120,16 @@ def _shift_arrays(
         return out
 
     def _shift_4d(arr: np.ndarray) -> np.ndarray:
-        """Shift (C, Z, Y, X) array."""
-        return np.stack([_shift_3d(arr[c]) for c in range(arr.shape[0])], axis=0)
+        return np.stack([_shift_spatial(arr[c]) for c in range(arr.shape[0])], axis=0)
 
-    vol = _shift_3d(volume)
-    ci  = _shift_3d(gt.cell_indicator)
-    cc  = _shift_3d(gt.cell_center)
-    cm  = _shift_3d(gt.cell_mask)
+    if volume.ndim == 4:
+        vol = _shift_4d(volume)
+    else:
+        vol = _shift_spatial(volume)
+        
+    ci  = _shift_spatial(gt.cell_indicator)
+    cc  = _shift_spatial(gt.cell_center)
+    cm  = _shift_spatial(gt.cell_mask)
     mv  = _shift_4d(gt.movement_vectors)  # displacement magnitude unchanged by shift
     return vol, GroundTruth(ci, cc, cm, mv)
 
@@ -162,8 +169,7 @@ def _elastic_deform(
     sigma: float,
 ) -> tuple[np.ndarray, GroundTruth]:
     """Random elastic deformation via dense displacement fields."""
-    shape = volume.shape
-    dz, dy, dx = shape
+    dz, dy, dx = volume.shape[-3:]
 
     # Low-resolution random fields, then smooth and upsample
     rz = max(2, dz // 4)
@@ -220,9 +226,13 @@ def _elastic_deform(
     coords = np.array([zg + disp_z, yg + disp_y, xg + disp_x])
 
     def _warp(arr: np.ndarray, order: int) -> np.ndarray:
-        return map_coordinates(arr, coords, order=order, mode="nearest").reshape(shape).astype(np.float32)
+        return map_coordinates(arr, coords, order=order, mode="nearest").reshape((dz, dy, dx)).astype(np.float32)
 
-    vol = _warp(volume, 1)
+    if volume.ndim == 4:
+        vol = np.stack([_warp(volume[t], 1) for t in range(volume.shape[0])], axis=0)
+    else:
+        vol = _warp(volume, 1)
+        
     ci  = _warp(gt.cell_indicator, 1)
     cc  = _warp(gt.cell_center,    0)
     cm  = _warp(gt.cell_mask,      0)
@@ -244,11 +254,13 @@ def _anisotropic_zoom(
     shape = volume.shape
     factors = (z_factor, xy_factor, xy_factor)
 
-    def _resize(arr: np.ndarray, order: int) -> np.ndarray:
-        out = zoom(arr, factors, order=order)
-        return _center_crop_or_pad(out, shape)
+    def _resize(arr: np.ndarray, order: int, is_vol: bool = False) -> np.ndarray:
+        f = (1.0, *factors) if is_vol and arr.ndim == 4 else factors
+        out = zoom(arr, f, order=order)
+        t_shape = (arr.shape[0], *shape[-3:]) if is_vol and arr.ndim == 4 else shape[-3:]
+        return _center_crop_or_pad(out, t_shape)
 
-    vol = _resize(volume.astype(np.float32), order=1)
+    vol = _resize(volume.astype(np.float32), order=1, is_vol=True)
     ci  = np.clip(_resize(gt.cell_indicator, 1), 0, 1).astype(np.float32)
     cc  = _resize(gt.cell_center, 0).astype(np.float32)
     cm  = _resize(gt.cell_mask,   0).astype(np.float32)
@@ -262,7 +274,7 @@ def _anisotropic_zoom(
     return vol, GroundTruth(ci, cc, cm, mv.astype(np.float32))
 
 
-def _center_crop_or_pad(arr: np.ndarray, target: tuple[int, int, int]) -> np.ndarray:
+def _center_crop_or_pad(arr: np.ndarray, target: tuple[int, ...]) -> np.ndarray:
     out = np.zeros(target, dtype=arr.dtype)
     slices_src: list[slice] = []
     slices_dst: list[slice] = []
@@ -275,9 +287,7 @@ def _center_crop_or_pad(arr: np.ndarray, target: tuple[int, int, int]) -> np.nda
             start = (t - s) // 2
             slices_src.append(slice(0, s))
             slices_dst.append(slice(start, start + s))
-    out[slices_dst[0], slices_dst[1], slices_dst[2]] = arr[
-        slices_src[0], slices_src[1], slices_src[2]
-    ]
+    out[tuple(slices_dst)] = arr[tuple(slices_src)]
     return out
 
 

@@ -60,10 +60,33 @@ class DetectionLoss(nn.Module):
         self,
         pred: torch.Tensor,
         gt: torch.Tensor,
+        cell_mask: torch.Tensor,
     ) -> torch.Tensor:
         pred, gt = self._align_pred_gt(pred, gt)
-        weight = torch.where(gt < 0.5, self.w_bg, self.w_fg)
-        return (weight * (pred - gt) ** 2).mean()
+        cell_mask, _ = self._align_pred_gt(cell_mask, gt)
+        
+        # Paper: "We only train on the mean squared error loss within the training mask."
+        # Background regions are unconstrained.
+        mask = (cell_mask > 0).float()
+        
+        if mask.sum() == 0:
+            return pred.sum() * 0.0
+            
+        diff2 = (pred - gt) ** 2
+        return (mask * diff2).sum() / mask.sum().clamp(min=1)
+
+    def _calc_mv_loss(self, pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor, pred_indicator: torch.Tensor | None = None) -> torch.Tensor:
+        if mask.sum() == 0:
+            return pred.sum() * 0.0
+
+        if pred_indicator is not None:
+            confidence = pred_indicator.squeeze(1).detach()
+        else:
+            confidence = torch.ones_like(mask, dtype=pred.dtype)
+
+        weight = (confidence * mask.float()).unsqueeze(1)
+        diff2 = (pred - gt) ** 2
+        return (weight * diff2).sum() / mask.sum().clamp(min=1)
 
     def movement_vector_loss(
         self,
@@ -72,33 +95,41 @@ class DetectionLoss(nn.Module):
         cell_mask: torch.Tensor,
         maxima: torch.Tensor | None = None,
         pred_indicator: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
         pred, gt = self._align_pred_gt(pred, gt)
         cell_mask, _ = self._align_pred_gt(cell_mask, gt[:, :1])
         cell_mask = cell_mask.squeeze(1)
 
-        mode = self.vector_mask_mode
-        if mode == "curriculum" and self.current_epoch >= self.curriculum_epoch:
-            mode = "maxima"
-
-        if mode == "maxima" and maxima is not None:
-            maxima, _ = self._align_pred_gt(maxima.float(), gt[:, :1])
-            mask = maxima.squeeze(1) > 0
-        else:
-            mask = cell_mask > 0
-
-        if mask.sum() == 0:
-            return pred.sum() * 0.0
-
+        # LA: Full cell mask
+        mask_la = cell_mask > 0
+        
         if pred_indicator is not None:
             pred_indicator, _ = self._align_pred_gt(pred_indicator, gt[:, :1])
-            confidence = pred_indicator.squeeze(1).detach()
-        else:
-            confidence = torch.ones_like(mask, dtype=pred.dtype)
+            
+        loss_la = self._calc_mv_loss(pred, gt, mask_la, pred_indicator)
 
-        weight = (confidence * mask.float()).unsqueeze(1)
-        diff2 = (pred - gt) ** 2
-        return (weight * diff2).sum() / mask.sum().clamp(min=1)
+        # LB: Maxima only
+        if maxima is not None:
+            maxima, _ = self._align_pred_gt(maxima.float(), gt[:, :1])
+            mask_lb = maxima.squeeze(1) > 0
+        else:
+            mask_lb = mask_la
+            
+        loss_lb = self._calc_mv_loss(pred, gt, mask_lb, pred_indicator)
+
+        mode = self.vector_mask_mode
+        if mode == "curriculum":
+            step = getattr(self, "current_step", getattr(self, "current_epoch", 0) * 100)
+            alpha = 1.0 / (1.0 + torch.exp(torch.tensor(0.01 * (-step + 200000)))).item()
+            loss_mv = alpha * loss_la + (1.0 - alpha) * loss_lb
+        elif mode == "maxima":
+            alpha = 0.0
+            loss_mv = loss_lb
+        else:
+            alpha = 1.0
+            loss_mv = loss_la
+
+        return loss_mv, loss_la, loss_lb, alpha
 
     def forward(
         self,
@@ -112,8 +143,8 @@ class DetectionLoss(nn.Module):
         cell_mask = targets["cell_mask"]
         maxima = outputs.get("maxima")
 
-        loss_ci = self.cell_indicator_loss(pred_ci, gt_ci)
-        loss_mv = self.movement_vector_loss(
+        loss_ci = self.cell_indicator_loss(pred_ci, gt_ci, cell_mask)
+        loss_mv, loss_la, loss_lb, alpha = self.movement_vector_loss(
             pred_mv,
             gt_mv,
             cell_mask,
@@ -125,4 +156,7 @@ class DetectionLoss(nn.Module):
             "loss": total,
             "loss_ci": loss_ci.detach(),
             "loss_mv": loss_mv.detach(),
+            "loss_la": loss_la.detach(),
+            "loss_lb": loss_lb.detach(),
+            "alpha": torch.tensor(alpha, device=total.device),
         }
