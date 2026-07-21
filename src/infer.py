@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from src.config import Config
 from src.data.zarr_loader import ZarrVolume, list_zarr_samples, normalize_volume
-from src.models.unet3d import CellTrackingUNet
+from src.models.residual_unet3d import ResidualCellTrackingUNet as CellTrackingUNet
 from src.tracking.linker import (
     DetectedNode,
     assign_global_node_ids,
@@ -89,8 +89,15 @@ def infer_sample(
     frame_detections: dict[int, list[DetectedNode]] = {}
 
     for t in tqdm(range(volume.num_timepoints), desc=volume.sample_id, leave=False):
-        frame = normalize_volume(volume.get_frame(t), mode=normalize_mode)
-        x = torch.from_numpy(frame).unsqueeze(0).unsqueeze(0).float().to(device)
+        frames = []
+        for i in range(-3, 4):
+            t_offset = max(0, min(t + i, volume.num_timepoints - 1))
+            f = normalize_volume(volume.get_frame(t_offset), mode=normalize_mode)
+            frames.append(f)
+            
+        import numpy as np
+        frame_window = np.stack(frames, axis=0) # (7, Z, Y, X)
+        x = torch.from_numpy(frame_window).unsqueeze(0).unsqueeze(0).float().to(device)
 
         outputs = model(x, inference=True)
 

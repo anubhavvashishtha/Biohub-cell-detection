@@ -20,16 +20,12 @@ class DetectionLoss(nn.Module):
 
     def __init__(
         self,
-        w_bg: float = 10.0,
-        w_fg: float = 1.0,
         lambda_mv: float = 1.0,
         vector_mask_mode: str = "full",
         curriculum_epoch: int = 50,
         output_shape: tuple[int, int, int] | None = None,
     ):
         super().__init__()
-        self.w_bg = w_bg
-        self.w_fg = w_fg
         self.lambda_mv = lambda_mv
         self.vector_mask_mode = vector_mask_mode
         self.curriculum_epoch = curriculum_epoch
@@ -119,8 +115,11 @@ class DetectionLoss(nn.Module):
 
         mode = self.vector_mask_mode
         if mode == "curriculum":
-            step = getattr(self, "current_step", getattr(self, "current_epoch", 0) * 100)
-            alpha = 1.0 / (1.0 + torch.exp(torch.tensor(0.01 * (-step + 200000)))).item()
+            # Smooth transition centered at curriculum_epoch.
+            # alpha drops from 1.0 (full mask) to 0.0 (maxima only).
+            diff = float(self.current_epoch - self.curriculum_epoch)
+            # scale=0.5 provides a smooth transition window of ~15 epochs
+            alpha = 1.0 / (1.0 + torch.exp(torch.tensor(0.5 * diff))).item()
             loss_mv = alpha * loss_la + (1.0 - alpha) * loss_lb
         elif mode == "maxima":
             alpha = 0.0

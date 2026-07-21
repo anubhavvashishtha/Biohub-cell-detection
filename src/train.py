@@ -156,8 +156,6 @@ def train(config: Config, resume_path: str | None = None) -> None:
 
     # --- loss ---
     loss_fn = DetectionLoss(
-        w_bg=config.training.w_bg,
-        w_fg=config.training.w_fg,
         lambda_mv=config.training.lambda_mv,
         vector_mask_mode=config.training.vector_mask_mode,
         curriculum_epoch=config.training.vector_curriculum_epoch,

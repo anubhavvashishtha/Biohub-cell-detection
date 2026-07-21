@@ -1,58 +1,38 @@
-"""
-Zip the source code, configs, and required files for Kaggle Dataset upload.
-Excludes large files, datasets, caches, and checkpoints.
-"""
-
 import os
 import zipfile
-from pathlib import Path
 
-# Paths to include
-INCLUDES = ["src", "configs", "requirements.txt", "tests", "create_subset.py"]
-OUTPUT_ZIP = "biohub_code.zip"
-
-# Patterns/folders to exclude
-EXCLUDE_PATTERNS = [
-    "__pycache__",
-    ".git",
-    ".gemini",
-    ".agents",
-    "checkpoints",
-    "scratch",
-    "test_out",
-    ".ipynb_checkpoints",
-]
-
-def should_exclude(path: Path) -> bool:
-    for pattern in EXCLUDE_PATTERNS:
-        if pattern in path.parts or any(pattern in part for part in path.parts):
-            return True
-    return False
-
-def zip_project():
-    root_dir = Path(".")
-    zip_path = root_dir / OUTPUT_ZIP
+def zip_project(output_filename="biohub_code.zip"):
+    print(f"Creating {output_filename}...")
     
-    print(f"Creating zip archive at: {zip_path.resolve()}")
+    # Files and directories to include
+    targets = [
+        "src",
+        "configs",
+        "requirements.txt"
+    ]
     
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for item in INCLUDES:
-            item_path = root_dir / item
-            if not item_path.exists():
-                print(f"Warning: {item} does not exist, skipping.")
+    with zipfile.ZipFile(output_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for target in targets:
+            if not os.path.exists(target):
+                print(f"Warning: {target} not found, skipping.")
                 continue
                 
-            if item_path.is_file():
-                if not should_exclude(item_path):
-                    zipf.write(item_path, item_path.relative_to(root_dir))
-                    print(f"Added file: {item}")
+            if os.path.isfile(target):
+                zipf.write(target, target)
+                print(f"Added file: {target}")
             else:
-                for file_path in item_path.rglob("*"):
-                    if file_path.is_file() and not should_exclude(file_path):
-                        archive_name = file_path.relative_to(root_dir)
-                        zipf.write(file_path, archive_name)
+                for root, dirs, files in os.walk(target):
+                    # Skip __pycache__
+                    if "__pycache__" in root:
+                        continue
                         
-    print(f"Successfully created {OUTPUT_ZIP} ({zip_path.stat().st_size / 1024:.1f} KB)")
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        # Explicitly ensure we include our new .pt files
+                        zipf.write(file_path, file_path)
+                        print(f"Added: {file_path}")
+                        
+    print(f"Successfully created {output_filename}")
 
 if __name__ == "__main__":
     zip_project()

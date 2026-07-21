@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-import zarr
+try:
+    import zarr
+except ImportError:
+    zarr = None
 
 
 def list_zarr_samples(data_root: str | Path) -> list[Path]:
@@ -28,8 +31,10 @@ def embryo_id_from_sample(sample_id: str) -> str:
     return sample_id.split("_")[0]
 
 
-def open_volume(path: str | Path) -> zarr.Array:
+def open_volume(path: str | Path) -> "zarr.Array":
     """Open the main array at path 0/ inside a .zarr directory."""
+    if zarr is None:
+        raise ImportError("zarr is not installed")
     store = zarr.open(str(path), mode="r")
     if "0" in store:
         return store["0"]

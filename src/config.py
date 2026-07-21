@@ -43,8 +43,6 @@ class TrainingConfig:
     amp: bool = True
     swa_start_epoch: int = 80
     val_every: int = 500
-    w_bg: float = 10.0
-    w_fg: float = 1.0
     lambda_mv: float = 1.0
     vector_mask_mode: str = "full"
     vector_curriculum_epoch: int = 50
