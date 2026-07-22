@@ -225,6 +225,7 @@ def train(config: Config, resume_path: str | None = None) -> None:
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.training.epochs}")
         # Training metrics accumulators
         epoch_train_losses = {"loss": 0.0, "loss_ci": 0.0, "loss_mv": 0.0, "loss_la": 0.0, "loss_lb": 0.0, "alpha": 0.0}
+        n_batches = 0
 
         for batch in pbar:
             loss_fn.current_step = global_step
@@ -304,17 +305,21 @@ def train(config: Config, resume_path: str | None = None) -> None:
         print(f"  Val  : Loss={latest_val_m['loss']:.4f}, CI={latest_val_m['loss_ci']:.4f}, MV={latest_val_m['loss_mv']:.4f}, LA={latest_val_m.get('loss_la', 0.0):.4f}, LB={latest_val_m.get('loss_lb', 0.0):.4f}, Alpha={latest_val_m.get('alpha', 0.0):.4f}")
 
         # Save to CSV
-        csv_path = ckpt_dir / "metrics.csv"
+        csv_path = ckpt_dir / "training_log.csv"
         write_header = not csv_path.exists()
         with open(csv_path, mode="a", newline="") as f:
             writer = csv.writer(f)
             if write_header:
-                writer.writerow(["epoch", "train_loss", "train_ci", "train_mv", "train_la", "train_lb", "train_alpha", 
-                                 "val_loss", "val_ci", "val_mv", "val_la", "val_lb", "val_alpha"])
+                writer.writerow([
+                    "epoch", "train_loss", "val_loss", "val_loss_ci", "val_loss_mv", "lr",
+                    "train_loss_ci", "train_loss_mv", "train_loss_la", "train_loss_lb", "train_alpha",
+                    "val_loss_la", "val_loss_lb", "val_alpha"
+                ])
             writer.writerow([
                 epoch + 1,
-                avg_train['loss'], avg_train['loss_ci'], avg_train['loss_mv'], avg_train['loss_la'], avg_train['loss_lb'], avg_train['alpha'],
-                latest_val_m['loss'], latest_val_m['loss_ci'], latest_val_m['loss_mv'], latest_val_m.get('loss_la', 0.0), latest_val_m.get('loss_lb', 0.0), latest_val_m.get('alpha', 0.0)
+                avg_train['loss'], latest_val_m['loss'], latest_val_m['loss_ci'], latest_val_m['loss_mv'], optimizer.param_groups[0]['lr'],
+                avg_train['loss_ci'], avg_train['loss_mv'], avg_train['loss_la'], avg_train['loss_lb'], avg_train['alpha'],
+                latest_val_m.get('loss_la', 0.0), latest_val_m.get('loss_lb', 0.0), latest_val_m.get('alpha', 0.0)
             ])
             
         # Update metrics graph

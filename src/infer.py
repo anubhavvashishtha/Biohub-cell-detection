@@ -67,6 +67,39 @@ def compute_crop_offset(
 
 # ---------------------------------------------------------------------------
 # Per-sample inference
+def pad_spatial_tensor_if_needed(
+    x: torch.Tensor,
+    min_shape: tuple[int, int, int] = (64, 256, 256),
+) -> tuple[torch.Tensor, tuple[int, int, int]]:
+    """Pad spatial dimensions (Z, Y, X) of x if smaller than min_shape."""
+    spatial_shape = x.shape[-3:]
+    pad_z = max(0, min_shape[0] - spatial_shape[0])
+    pad_y = max(0, min_shape[1] - spatial_shape[1])
+    pad_x = max(0, min_shape[2] - spatial_shape[2])
+
+    if pad_z == 0 and pad_y == 0 and pad_x == 0:
+        return x, (0, 0, 0)
+
+    pz_before = pad_z // 2
+    pz_after  = pad_z - pz_before
+    py_before = pad_y // 2
+    py_after  = pad_y - py_before
+    px_before = pad_x // 2
+    px_after  = pad_x - px_before
+
+    pad_tuple = (px_before, px_after, py_before, py_after, pz_before, pz_after)
+    if x.dim() == 6:
+        N, C, T, Z, Y, X = x.shape
+        x_5d = x.view(N, C * T, Z, Y, X)
+        padded_5d = torch.nn.functional.pad(x_5d, pad_tuple, mode="reflect")
+        padded_x = padded_5d.view(N, C, T, padded_5d.shape[2], padded_5d.shape[3], padded_5d.shape[4])
+    else:
+        padded_x = torch.nn.functional.pad(x, pad_tuple, mode="reflect")
+    return padded_x, (pz_before, py_before, px_before)
+
+
+# ---------------------------------------------------------------------------
+# Per-sample inference
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
@@ -82,10 +115,7 @@ def infer_sample(
     Returns ``{timepoint: [DetectedNode, …]}`` with coordinates expressed
     in the *full-volume* voxel space.
     """
-    input_shape: tuple[int, int, int] = tuple(volume.shape[1:])   # (Z, Y, X)
-    output_shape: tuple[int, int, int] = model.output_shape        # valid-padded output
-    crop_offset = compute_crop_offset(input_shape, output_shape)
-
+    min_shape = tuple(model.input_shape)
     frame_detections: dict[int, list[DetectedNode]] = {}
 
     for t in tqdm(range(volume.num_timepoints), desc=volume.sample_id, leave=False):
@@ -97,13 +127,24 @@ def infer_sample(
             
         import numpy as np
         frame_window = np.stack(frames, axis=0) # (7, Z, Y, X)
+        frame_input_shape = frame_window.shape[1:] # (Z, Y, X)
         x = torch.from_numpy(frame_window).unsqueeze(0).unsqueeze(0).float().to(device)
 
-        outputs = model(x, inference=True)
+        x_padded, (pz_b, py_b, px_b) = pad_spatial_tensor_if_needed(x, min_shape=min_shape)
+
+        outputs = model(x_padded, inference=True)
 
         ci     = outputs["cell_indicator"][0, 0].cpu().numpy()
-        maxima = outputs["maxima"][0].cpu().numpy()
+        maxima = outputs["maxima"][0].cpu().numpy() if outputs["maxima"].ndim == 4 else outputs["maxima"][0, 0].cpu().numpy()
         mv     = outputs["movement_vectors"][0].cpu().numpy()
+
+        actual_output_shape = ci.shape  # (Z_out, Y_out, X_out)
+        crop_offset_padded = compute_crop_offset(x_padded.shape[-3:], actual_output_shape)
+        crop_offset = (
+            crop_offset_padded[0] - pz_b,
+            crop_offset_padded[1] - py_b,
+            crop_offset_padded[2] - px_b,
+        )
 
         nodes = extract_peaks_from_frame(
             ci,

@@ -134,7 +134,7 @@ def test_loss():
     import torch
     from src.losses.detection_loss import DetectionLoss
 
-    loss_fn = DetectionLoss(w_bg=10.0, w_fg=1.0, lambda_mv=1.0)
+    loss_fn = DetectionLoss(lambda_mv=1.0)
 
     # Synthetic pred/gt with matching shapes
     B, D, H, W = 2, 20, 80, 80
