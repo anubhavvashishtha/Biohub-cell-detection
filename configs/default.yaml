@@ -23,6 +23,7 @@ data:
 training:
   lr: 1.0e-4
   batch_size: 2
+  gradient_accumulation_steps: 1
   epochs: 100
   amp: true
   swa_start_epoch: 80

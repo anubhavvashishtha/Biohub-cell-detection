@@ -39,6 +39,7 @@ class DataConfig:
 class TrainingConfig:
     lr: float = 1e-4
     batch_size: int = 2
+    gradient_accumulation_steps: int = 1
     epochs: int = 100
     amp: bool = True
     swa_start_epoch: int = 80

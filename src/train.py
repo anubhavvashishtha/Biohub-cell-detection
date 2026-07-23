@@ -227,7 +227,10 @@ def train(config: Config, resume_path: str | None = None) -> None:
         epoch_train_losses = {"loss": 0.0, "loss_ci": 0.0, "loss_mv": 0.0, "loss_la": 0.0, "loss_lb": 0.0, "alpha": 0.0}
         n_batches = 0
 
-        for batch in pbar:
+        accum_steps = max(1, getattr(config.training, "gradient_accumulation_steps", 1))
+        optimizer.zero_grad(set_to_none=True)
+
+        for batch_idx, batch in enumerate(pbar):
             loss_fn.current_step = global_step
             volume  = batch["volume"].to(device)
             targets = {
@@ -236,32 +239,35 @@ def train(config: Config, resume_path: str | None = None) -> None:
                 "movement_vectors": batch["movement_vectors"].to(device),
             }
 
-            optimizer.zero_grad(set_to_none=True)
-
             with torch.cuda.amp.autocast(enabled=use_amp):
                 outputs = model(volume, inference=False)
                 losses  = loss_fn(outputs, targets)
-                loss    = losses["loss"]
+                raw_loss = losses["loss"]
+                scaled_loss = raw_loss / accum_steps
 
-            scaler.scale(loss).backward()
+            scaler.scale(scaled_loss).backward()
 
-            # Gradient clipping — unscale first so clip threshold is meaningful
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            n_batches += 1
+            is_accum_step = ((batch_idx + 1) % accum_steps == 0) or (batch_idx + 1 == len(train_loader))
 
-            scaler.step(optimizer)
-            scaler.update()
+            if is_accum_step:
+                # Gradient clipping — unscale first so clip threshold is meaningful
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-            # SWA parameter averaging
-            if swa_started:
-                swa_model.update_parameters(model)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+
+                # SWA parameter averaging
+                if swa_started:
+                    swa_model.update_parameters(model)
+
+                global_step += 1
 
             for k in epoch_train_losses:
                 if k in losses:
-                    epoch_train_losses[k] += float(losses[k])
-                    
-            n_batches  += 1
-            global_step += 1
+                    epoch_train_losses[k] += float(losses[k].detach().item())
 
             pbar.set_postfix(
                 loss=f"{losses['loss']:.4f}",
@@ -272,7 +278,7 @@ def train(config: Config, resume_path: str | None = None) -> None:
 
             # Step-level validation
             is_last_step = (n_batches == len(train_loader))
-            if global_step % config.training.val_every == 0 or is_last_step:
+            if is_accum_step and (global_step % config.training.val_every == 0 or is_last_step):
                 val_m = validate(model, loss_fn, val_loader, device)
                 latest_val_m = val_m
                 print(

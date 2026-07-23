@@ -27,6 +27,7 @@ data:
 training:
   lr: 5.0e-5                 # lower LR with larger model
   batch_size: 1              # full 64×256×256 patches are large; use 1 per GPU
+  gradient_accumulation_steps: 2  # effective batch size = 2 (1 * 2) with less GPU memory usage
   epochs: 150
   amp: true
   swa_start_epoch: 120       # SWA in last 30 epochs
