@@ -74,7 +74,7 @@ class Conv4d(nn.Module):
         self.kt = kernel_size[0]
         pad3d = tuple(k // 2 for k in kernel_size[1:])
         self.convs = nn.ModuleList([
-            nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size[1:], padding=pad3d)
+            nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size[1:], padding=0)
             for _ in range(self.kt)
         ])
         
@@ -101,7 +101,7 @@ class ConvBlock(nn.Module):
             self.conv = Conv4d(in_ch, out_ch, kernel_size)
         else:
             pad = tuple(k // 2 for k in kernel_size)
-            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=pad)
+            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=0)
             
         self.norm = nn.GroupNorm(groups, out_ch)
         self.act = nn.ReLU(inplace=True)

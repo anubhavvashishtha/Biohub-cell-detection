@@ -105,18 +105,30 @@ def extract_peaks_from_frame(
 
     oz, oy, ox = crop_offset
     coords = np.argwhere(maxima & (cell_indicator > threshold))
-    nodes: list[DetectedNode] = []
+    
+    # Pre-compute confidences and coords
+    peaks = []
     for i, (z, y, x) in enumerate(coords):
-        disp = movement_vectors[:, z, y, x].astype(np.float32)
+        peaks.append({
+            'confidence': float(cell_indicator[z, y, x]),
+            'z': z, 'y': y, 'x': x,
+            'disp': movement_vectors[:, z, y, x].astype(np.float32)
+        })
+        
+    # Sort by confidence descending and cap at top_k to prevent tracker hangs
+    peaks = sorted(peaks, key=lambda p: p['confidence'], reverse=True)[:500]
+
+    nodes: list[DetectedNode] = []
+    for i, p in enumerate(peaks):
         nodes.append(
             DetectedNode(
                 node_id=start_node_id + i,
                 t=t,
-                z=int(z) + oz,
-                y=int(y) + oy,
-                x=int(x) + ox,
-                confidence=float(cell_indicator[z, y, x]),
-                displacement=disp,
+                z=int(p['z']) + oz,
+                y=int(p['y']) + oy,
+                x=int(p['x']) + ox,
+                confidence=p['confidence'],
+                displacement=p['disp'],
             )
         )
     return nodes
