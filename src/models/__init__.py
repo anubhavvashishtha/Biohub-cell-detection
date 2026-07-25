@@ -1,5 +1,6 @@
-"""Models for cell detection and tracking."""
+﻿"""Models for cell detection and tracking."""
 
+from src.models.unet3d import CellTrackingUNet, UNet3DEncoderDecoder
 from src.models.residual_unet3d import ResidualCellTrackingUNet, ResUNet3DEncoderDecoder
 from src.models.nms import NMS3D
 from src.models.blocks import (
