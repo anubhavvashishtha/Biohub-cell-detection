@@ -108,7 +108,8 @@ def rasterize_cell_mask(
 def sphere_mask_from_centers(
     shape: tuple[int, int, int],
     nodes: list[Node],
-    radius_voxels: float = 2.0,
+    scale: tuple[float, float, float],
+    radius_um: float = 1.0,
 ) -> np.ndarray:
     """Euclidean sphere mask (alternative to cube mask)."""
     centers = np.zeros(shape, dtype=bool)
@@ -117,8 +118,8 @@ def sphere_mask_from_centers(
             centers[node.z, node.y, node.x] = True
     if not centers.any():
         return np.zeros(shape, dtype=np.float32)
-    dist = distance_transform_edt(~centers)
-    return (dist <= radius_voxels).astype(np.float32)
+    dist = distance_transform_edt(~centers, sampling=scale)
+    return (dist <= radius_um).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -165,15 +166,16 @@ def generate_ground_truth(
     shape: tuple[int, int, int],
     nodes: list[Node],
     graph: TrackingGraph | None = None,
-    sigma: tuple[float, float, float] = (1.0, 2.0, 2.0),
-    cell_mask_radius: int = 2,
+    sigma: tuple[float, float, float] = (0.5, 2.0, 2.0),
+    cell_mask_radius: float = 1.0,
+    scale: tuple[float, float, float] = (1.625, 0.40625, 0.40625),
 ) -> GroundTruth:
     """Generate all GT targets for a single timepoint."""
     graph = graph or TrackingGraph(sample_id="")
     return GroundTruth(
         cell_indicator=rasterize_cell_indicator(shape, nodes, sigma=sigma),
         cell_center=rasterize_cell_center(shape, nodes),
-        cell_mask=rasterize_cell_mask(shape, nodes, radius=cell_mask_radius),
+        cell_mask=sphere_mask_from_centers(shape, nodes, scale=scale, radius_um=cell_mask_radius),
         movement_vectors=compute_movement_vectors(shape, nodes, graph),
     )
 

@@ -1,48 +1,47 @@
-# Competition config — higher capacity for the real Kaggle run
-# Use this instead of default.yaml for full training
+# Competition config — synced with kaggle_train.ipynb and recommended fixes
 
 model:
   in_channels: 1
-  base_features: 12          # 12 initial feature maps (from paper/repo)
-  feature_multiplier: 3.0    # Increase by factor of 3 at each level
+  base_features: 16
+  feature_multiplier: 3.0
   downsample_factors:
-    - [1, 2, 2]              # level 0: no Z downsampling (anisotropic)
-    - [2, 2, 2]              # level 1
-    - [2, 2, 2]              # level 2
-  nms_kernel: 5              # larger NMS window → fewer duplicate peaks
-  nms_threshold: 0.4         # slightly lower threshold for better recall
+    - [1, 2, 2]
+    - [2, 2, 2]
+    - [2, 2, 2]
+  nms_kernel: 5
+  nms_threshold: 0.4
 
 data:
   data_root: train
-  patch_size: [48, 192, 192] # larger patches → more context
+  patch_size: [64, 128, 128]
   train_full_volume: false
-  gaussian_sigma: [1.5, 2.5, 2.5]  # slightly wider blobs for anisotropic voxels
-  cell_mask_radius: 3        # slightly larger movement-vector mask
+  gaussian_sigma: [0.5, 2.0, 2.0]
+  cell_mask_radius: 1.0
   scale: [1.625, 0.40625, 0.40625]
-  normalize_mode: percentile # percentile normalisation is more robust to outliers
+  normalize_mode: percentile
   reject_empty: true
-  center_on_cell_prob: 0.6   # centre on a cell more often
-  input_shape: [64, 256, 256]
+  center_on_cell_prob: 0.5
+  input_shape: [64, 128, 128]
 
 training:
-  lr: 5.0e-5                 # lower LR with larger model
-  batch_size: 1              # full 64×256×256 patches are large; use 1 per GPU
-  gradient_accumulation_steps: 2  # effective batch size = 2 (1 * 2) with less GPU memory usage
+  lr: 2.5e-5
+  batch_size: 4
+  gradient_accumulation_steps: 2
   epochs: 150
   amp: true
-  swa_start_epoch: 120       # SWA in last 30 epochs
-  val_every: 250             # validate more frequently
-  w_bg: 12.0                 # slightly stronger background penalty (sparse GT)
+  swa_start_epoch: 80
+  val_every: 250
+  w_bg: 1.0
   w_fg: 1.0
-  lambda_mv: 0.5             # down-weight vector loss early (curriculum handles rest)
+  lambda_mv: 1.0
   vector_mask_mode: curriculum
-  vector_curriculum_epoch: 75  # switch to maxima-only at half-way
+  vector_curriculum_epoch: 40
   checkpoint_dir: checkpoints_competition
   num_workers: 4
-  val_embryo_fraction: 0.15  # smaller val set → more training data
-  seed: 0
+  val_embryo_fraction: 0.25
+  seed: 42
   weight_decay: 1.0e-4
-  patience: 5
+  patience: 0
 
 inference:
   max_link_distance_um: 7.0

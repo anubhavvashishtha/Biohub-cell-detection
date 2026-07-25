@@ -27,10 +27,8 @@ def compute_spatial_shape_after_convs(
     kernel: tuple[int, int, int],
     num_convs: int = 2,
 ) -> tuple[int, int, int]:
-    shape = input_shape
-    for _ in range(num_convs):
-        shape = tuple(conv_out_size(s, k) for s, k in zip(shape, kernel))
-    return shape
+    # With same padding, convolutions do not shrink the spatial dimensions
+    return input_shape
 
 
 def compute_output_shape(
@@ -74,8 +72,9 @@ class Conv4d(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel_size: tuple[int, int, int, int]):
         super().__init__()
         self.kt = kernel_size[0]
+        pad3d = tuple(k // 2 for k in kernel_size[1:])
         self.convs = nn.ModuleList([
-            nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size[1:], padding=0)
+            nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size[1:], padding=pad3d)
             for _ in range(self.kt)
         ])
         
@@ -101,7 +100,8 @@ class ConvBlock(nn.Module):
         if len(kernel_size) == 4:
             self.conv = Conv4d(in_ch, out_ch, kernel_size)
         else:
-            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=0)
+            pad = tuple(k // 2 for k in kernel_size)
+            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=pad)
             
         self.norm = nn.GroupNorm(groups, out_ch)
         self.act = nn.ReLU(inplace=True)

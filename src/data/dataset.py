@@ -150,7 +150,8 @@ class BiohubDetectionDataset(Dataset):
             nodes,
             graph=graph,
             sigma=tuple(self.data_cfg.gaussian_sigma),
-            cell_mask_radius=self.data_cfg.cell_mask_radius,
+            cell_mask_radius=float(self.data_cfg.cell_mask_radius),
+            scale=tuple(self.data_cfg.scale),
         )
 
         if self.data_cfg.train_full_volume:

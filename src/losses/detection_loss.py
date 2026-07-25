@@ -20,12 +20,16 @@ class DetectionLoss(nn.Module):
 
     def __init__(
         self,
+        w_bg: float = 1.0,
+        w_fg: float = 1.0,
         lambda_mv: float = 1.0,
         vector_mask_mode: str = "full",
         curriculum_epoch: int = 50,
         output_shape: tuple[int, int, int] | None = None,
     ):
         super().__init__()
+        self.w_bg = w_bg
+        self.w_fg = w_fg
         self.lambda_mv = lambda_mv
         self.vector_mask_mode = vector_mask_mode
         self.curriculum_epoch = curriculum_epoch
@@ -59,17 +63,13 @@ class DetectionLoss(nn.Module):
         cell_mask: torch.Tensor,
     ) -> torch.Tensor:
         pred, gt = self._align_pred_gt(pred, gt)
-        cell_mask, _ = self._align_pred_gt(cell_mask, gt)
         
-        # Paper: "We only train on the mean squared error loss within the training mask."
-        # Background regions are unconstrained.
-        mask = (cell_mask > 0).float()
+        # Linajea's logic: weight pixels based on GT cutoff (0.01)
+        # gt is Gaussian blob, so <0.01 is background
+        weight = torch.where(gt < 0.01, self.w_bg, self.w_fg)
         
-        if mask.sum() == 0:
-            return pred.sum() * 0.0
-            
         diff2 = (pred - gt) ** 2
-        return (mask * diff2).sum() / mask.sum().clamp(min=1)
+        return (weight * diff2).mean()
 
     def _calc_mv_loss(self, pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor, pred_indicator: torch.Tensor | None = None) -> torch.Tensor:
         if mask.sum() == 0:

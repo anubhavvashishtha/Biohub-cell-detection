@@ -28,7 +28,7 @@ from src.config import Config
 from src.data.dataset import BiohubDetectionDataset, collate_batch, split_samples_by_embryo
 from src.data.zarr_loader import list_zarr_samples
 from src.losses.detection_loss import DetectionLoss
-from src.models.unet3d import CellTrackingUNet
+from src.models.residual_unet3d import ResidualCellTrackingUNet
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ def set_seed(seed: int) -> None:
 # Data loaders
 # ---------------------------------------------------------------------------
 
-def build_dataloaders(config: Config, model: CellTrackingUNet):
+def build_dataloaders(config: Config, model: ResidualCellTrackingUNet):
     all_paths = list_zarr_samples(config.data.data_root)
     if not all_paths:
         raise FileNotFoundError(
@@ -105,7 +105,7 @@ def build_dataloaders(config: Config, model: CellTrackingUNet):
 
 @torch.no_grad()
 def validate(
-    model: CellTrackingUNet,
+    model: ResidualCellTrackingUNet,
     loss_fn: DetectionLoss,
     loader: DataLoader,
     device: torch.device,
@@ -146,7 +146,7 @@ def train(config: Config, resume_path: str | None = None) -> None:
     # --- model ---
     # Ensure model input shape matches training patch size to avoid crop size mismatch
     config.data.input_shape = config.data.patch_size
-    model = CellTrackingUNet.from_config(config).to(device)
+    model = ResidualCellTrackingUNet.from_config(config).to(device)
     print(
         f"Model output shape: {model.output_shape}  "
         f"(input: {config.data.input_shape})"
@@ -156,6 +156,8 @@ def train(config: Config, resume_path: str | None = None) -> None:
 
     # --- loss ---
     loss_fn = DetectionLoss(
+        w_bg=getattr(config.training, "w_bg", 1.0),
+        w_fg=getattr(config.training, "w_fg", 1.0),
         lambda_mv=config.training.lambda_mv,
         vector_mask_mode=config.training.vector_mask_mode,
         curriculum_epoch=config.training.vector_curriculum_epoch,
@@ -401,7 +403,7 @@ def train(config: Config, resume_path: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 def _save_checkpoint(
-    model: CellTrackingUNet,
+    model: ResidualCellTrackingUNet,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
     config: Config,

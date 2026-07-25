@@ -69,7 +69,7 @@ def compute_crop_offset(
 # Per-sample inference
 def pad_spatial_tensor_if_needed(
     x: torch.Tensor,
-    min_shape: tuple[int, int, int] = (64, 256, 256),
+    min_shape: tuple[int, int, int] = (64, 128, 128),
 ) -> tuple[torch.Tensor, tuple[int, int, int]]:
     """Pad spatial dimensions (Z, Y, X) of x if smaller than min_shape."""
     spatial_shape = x.shape[-3:]

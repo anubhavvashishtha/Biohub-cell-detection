@@ -48,7 +48,8 @@ class ResConvBlock(nn.Module):
         if len(kernel_size) == 4:
             self.conv = Conv4d(in_ch, out_ch, kernel_size)
         else:
-            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=0)
+            pad = tuple(k // 2 for k in kernel_size)
+            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=pad)
             
         self.norm = nn.GroupNorm(groups, out_ch)
         self.act  = nn.GELU()
