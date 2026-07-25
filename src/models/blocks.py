@@ -27,8 +27,10 @@ def compute_spatial_shape_after_convs(
     kernel: tuple[int, int, int],
     num_convs: int = 2,
 ) -> tuple[int, int, int]:
-    # With same padding, convolutions do not shrink the spatial dimensions
-    return input_shape
+    shape = input_shape
+    for _ in range(num_convs):
+        shape = tuple(conv_out_size(s, k, padding=0) for s, k in zip(shape, kernel))
+    return shape
 
 
 def compute_output_shape(
