@@ -24,7 +24,7 @@ class ModelConfig:
 @dataclass
 class DataConfig:
     data_root: str = "train"
-    patch_size: list[int] = field(default_factory=lambda: [32, 128, 128])
+    patch_size: list[int] = field(default_factory=lambda: [16, 128, 128])
     train_full_volume: bool = False
     gaussian_sigma: list[float] = field(default_factory=lambda: [1.0, 2.0, 2.0])
     cell_mask_radius: int = 2
@@ -32,7 +32,7 @@ class DataConfig:
     normalize_mode: str = "per_volume"
     reject_empty: bool = True
     center_on_cell_prob: float = 0.5
-    input_shape: list[int] = field(default_factory=lambda: [64, 256, 256])
+    input_shape: list[int] = field(default_factory=lambda: [16, 128, 128])
 
 
 @dataclass

@@ -41,33 +41,9 @@ def compute_output_shape(
     num_levels: int | None = None,
 ) -> tuple[int, int, int]:
     """
-    Dry-run spatial dimensions through encoder (DoubleConv + pool per level)
-    and decoder (upsample + concat + DoubleConv per level).
+    With same-padded convolutions, output spatial shape matches input spatial shape.
     """
-    levels = num_levels or len(downsample_factors)
-    shape = input_shape
-    skip_shapes: list[tuple[int, int, int]] = []
-
-    for i in range(levels):
-        kernel = base_kernel if i == 0 else deep_kernel
-        shape = compute_spatial_shape_after_convs(shape, kernel, num_convs=2)
-        skip_shapes.append(shape)
-        pool = downsample_factors[i]
-        shape = tuple(pool_out_size(s, k, stride=k) for s, k in zip(shape, pool))
-
-    # Bottleneck convolutions
-    shape = compute_spatial_shape_after_convs(shape, (3, 3, 3), num_convs=2)
-
-    for i in reversed(range(levels)):
-        pool = downsample_factors[i]
-        shape = tuple(s * p for s, p in zip(shape, pool))
-        skip = skip_shapes[i]
-        # Crop both to minimum shape (matching PyTorch center crop in decoder block)
-        shape = tuple(min(a, b) for a, b in zip(shape, skip))
-        kernel = base_kernel if i == 0 else deep_kernel
-        shape = compute_spatial_shape_after_convs(shape, kernel, num_convs=2)
-
-    return shape
+    return tuple(input_shape)
 
 
 class Conv4d(nn.Module):
@@ -76,7 +52,7 @@ class Conv4d(nn.Module):
         self.kt = kernel_size[0]
         pad3d = tuple(k // 2 for k in kernel_size[1:])
         self.convs = nn.ModuleList([
-            nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size[1:], padding=0)
+            nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size[1:], padding=pad3d)
             for _ in range(self.kt)
         ])
         
@@ -90,7 +66,7 @@ class Conv4d(nn.Module):
 
 
 class ConvBlock(nn.Module):
-    """Single valid Conv + GroupNorm + ReLU. Supports 4D (T,Z,Y,X) or 3D (Z,Y,X) kernels."""
+    """Single Conv + GroupNorm + ReLU with same padding. Supports 4D (T,Z,Y,X) or 3D (Z,Y,X) kernels."""
 
     def __init__(self, in_ch: int, out_ch: int, kernel_size: tuple[int, ...]):
         super().__init__()
@@ -103,7 +79,7 @@ class ConvBlock(nn.Module):
             self.conv = Conv4d(in_ch, out_ch, kernel_size)
         else:
             pad = tuple(k // 2 for k in kernel_size)
-            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=0)
+            self.conv = nn.Conv3d(in_ch, out_ch, kernel_size=kernel_size, padding=pad)
             
         self.norm = nn.GroupNorm(groups, out_ch)
         self.act = nn.ReLU(inplace=True)

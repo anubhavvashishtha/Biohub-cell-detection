@@ -109,7 +109,7 @@ def sphere_mask_from_centers(
     shape: tuple[int, int, int],
     nodes: list[Node],
     scale: tuple[float, float, float],
-    radius_um: float = 1.0,
+    radius_um: float = 2.5,
 ) -> np.ndarray:
     """Euclidean sphere mask (alternative to cube mask)."""
     centers = np.zeros(shape, dtype=bool)

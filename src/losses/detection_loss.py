@@ -83,18 +83,17 @@ class DetectionLoss(nn.Module):
         
         return loss_ci, loss_bg, loss_fg
 
-    def _calc_mv_loss(self, pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor, pred_indicator: torch.Tensor | None = None) -> torch.Tensor:
+    def _calc_mv_loss(self, pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         if mask.sum() == 0:
             return pred.sum() * 0.0
 
-        if pred_indicator is not None:
-            confidence = pred_indicator.squeeze(1).detach()
-        else:
-            confidence = torch.ones_like(mask, dtype=pred.dtype)
-
-        weight = (confidence * mask.float()).unsqueeze(1)
+        mask_3d = mask.float().unsqueeze(1)
         diff2 = (pred - gt) ** 2
-        return (weight * diff2).sum() / mask.sum().clamp(min=1)
+        
+        # Linajea's weighted_mse_loss:
+        # denominator is total channel elements inside cell_mask (3 * mask.sum())
+        ws = (mask_3d.sum() * pred.shape[1]).clamp(min=1.0)
+        return (mask_3d * diff2).sum() / ws
 
     def movement_vector_loss(
         self,
@@ -102,7 +101,6 @@ class DetectionLoss(nn.Module):
         gt: torch.Tensor,
         cell_mask: torch.Tensor,
         maxima: torch.Tensor | None = None,
-        pred_indicator: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
         pred, gt = self._align_pred_gt(pred, gt)
         cell_mask, _ = self._align_pred_gt(cell_mask, gt[:, :1])
@@ -110,11 +108,7 @@ class DetectionLoss(nn.Module):
 
         # LA: Full cell mask
         mask_la = cell_mask > 0
-        
-        if pred_indicator is not None:
-            pred_indicator, _ = self._align_pred_gt(pred_indicator, gt[:, :1])
-            
-        loss_la = self._calc_mv_loss(pred, gt, mask_la, pred_indicator)
+        loss_la = self._calc_mv_loss(pred, gt, mask_la)
 
         # LB: Maxima only
         if maxima is not None:
@@ -123,20 +117,18 @@ class DetectionLoss(nn.Module):
         else:
             mask_lb = mask_la
             
-        loss_lb = self._calc_mv_loss(pred, gt, mask_lb, pred_indicator)
+        loss_lb = self._calc_mv_loss(pred, gt, mask_lb)
 
         mode = self.vector_mask_mode
         if mode == "curriculum":
-            # Smooth transition centered at curriculum_epoch.
-            # alpha drops from 1.0 (full mask) to 0.0 (maxima only).
             diff = float(self.current_epoch - self.curriculum_epoch)
-            # scale=0.5 provides a smooth transition window of ~15 epochs
             alpha = 1.0 / (1.0 + torch.exp(torch.tensor(0.5 * diff))).item()
             loss_mv = alpha * loss_la + (1.0 - alpha) * loss_lb
         elif mode == "maxima":
             alpha = 0.0
             loss_mv = loss_lb
         else:
+            # Linajea default: full cell mask throughout training
             alpha = 1.0
             loss_mv = loss_la
 
@@ -160,7 +152,6 @@ class DetectionLoss(nn.Module):
             gt_mv,
             cell_mask,
             maxima=maxima,
-            pred_indicator=pred_ci,
         )
         total = loss_ci + self.lambda_mv * loss_mv
         return {

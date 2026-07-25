@@ -202,15 +202,39 @@ def train(config: Config, resume_path: str | None = None) -> None:
         print(f"Resuming from checkpoint: {resume_path}")
         ckpt = torch.load(resume_path, map_location=device)
         model.load_state_dict(ckpt["model"])
-        if "optimizer" in ckpt:
+        if "optimizer" in ckpt and ckpt["optimizer"] is not None:
             optimizer.load_state_dict(ckpt["optimizer"])
-        if "scaler" in ckpt and use_amp:
+            print("Loaded optimizer state.")
+        if "scaler" in ckpt and ckpt["scaler"] is not None and use_amp:
             scaler.load_state_dict(ckpt["scaler"])
         start_epoch = ckpt.get("epoch", -1) + 1
         global_step = ckpt.get("step", 0)
         best_val = ckpt.get("best_val", float("inf"))
         val_checks_without_improvement = ckpt.get("val_checks_without_improvement", 0)
-        print(f"Resumed at epoch {start_epoch}, step {global_step}. Best val: {best_val:.4f}, Patience: {val_checks_without_improvement}/{config.training.patience}")
+        swa_started = ckpt.get("swa_started", start_epoch >= config.training.swa_start_epoch)
+
+        if "cosine_scheduler" in ckpt and ckpt["cosine_scheduler"] is not None:
+            cosine_scheduler.load_state_dict(ckpt["cosine_scheduler"])
+            for param_group, lr in zip(optimizer.param_groups, cosine_scheduler.get_last_lr()):
+                param_group['lr'] = lr
+            print("Loaded cosine_scheduler state.")
+        else:
+            # Fast-forward cosine_scheduler to start_epoch if resuming an older checkpoint
+            for _ in range(start_epoch):
+                if not swa_started:
+                    cosine_scheduler.step()
+
+        if "swa_scheduler" in ckpt and ckpt["swa_scheduler"] is not None:
+            swa_scheduler.load_state_dict(ckpt["swa_scheduler"])
+            print("Loaded swa_scheduler state.")
+        if "swa_model" in ckpt and ckpt["swa_model"] is not None:
+            swa_model.load_state_dict(ckpt["swa_model"])
+
+        print(
+            f"Resumed at epoch {start_epoch}, step {global_step}. "
+            f"Best val: {best_val:.4f}, Patience: {val_checks_without_improvement}/{config.training.patience}, "
+            f"Current LR: {optimizer.param_groups[0]['lr']:.2e}"
+        )
 
     # ------------------------------------------------------------------ #
     #  Main training loop                                                  #
@@ -292,7 +316,8 @@ def train(config: Config, resume_path: str | None = None) -> None:
                     best_val = val_m["loss"]
                     val_checks_without_improvement = 0
                     _save_checkpoint(
-                        model, optimizer, scaler, config, epoch, global_step, best_val, val_checks_without_improvement, ckpt_dir / "best.pt"
+                        model, optimizer, scaler, config, epoch, global_step, best_val, val_checks_without_improvement, ckpt_dir / "best.pt",
+                        cosine_scheduler=cosine_scheduler, swa_scheduler=swa_scheduler, swa_started=swa_started, swa_model=swa_model
                     )
                     print(f"  ↑ New best val loss: {best_val:.4f}")
                 else:
@@ -367,7 +392,8 @@ def train(config: Config, resume_path: str | None = None) -> None:
             
         # Always save last.pt for easy resuming with patience intact
         _save_checkpoint(
-            model, optimizer, scaler, config, epoch, global_step, best_val, val_checks_without_improvement, ckpt_dir / "last.pt"
+            model, optimizer, scaler, config, epoch, global_step, best_val, val_checks_without_improvement, ckpt_dir / "last.pt",
+            cosine_scheduler=cosine_scheduler, swa_scheduler=swa_scheduler, swa_started=swa_started, swa_model=swa_model
         )
 
         # LR step
@@ -380,7 +406,8 @@ def train(config: Config, resume_path: str | None = None) -> None:
         if (epoch + 1) % 10 == 0 or epoch == config.training.epochs - 1:
             _save_checkpoint(
                 model, optimizer, scaler, config, epoch, global_step, best_val, val_checks_without_improvement,
-                ckpt_dir / f"epoch_{epoch + 1:03d}.pt"
+                ckpt_dir / f"epoch_{epoch + 1:03d}.pt",
+                cosine_scheduler=cosine_scheduler, swa_scheduler=swa_scheduler, swa_started=swa_started, swa_model=swa_model
             )
 
     # ---- Post-training: SWA batch-norm update ----
@@ -412,20 +439,29 @@ def _save_checkpoint(
     best_val: float,
     val_checks_without_improvement: int,
     path: Path,
+    cosine_scheduler: CosineAnnealingLR | None = None,
+    swa_scheduler: SWALR | None = None,
+    swa_started: bool = False,
+    swa_model: AveragedModel | None = None,
 ) -> None:
-    torch.save(
-        {
-            "model":  model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scaler": scaler.state_dict() if scaler.is_enabled() else None,
-            "config": _config_to_dict(config),
-            "epoch":  epoch,
-            "step":   step,
-            "best_val": best_val,
-            "val_checks_without_improvement": val_checks_without_improvement,
-        },
-        path,
-    )
+    payload = {
+        "model":  model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict() if scaler.is_enabled() else None,
+        "config": _config_to_dict(config),
+        "epoch":  epoch,
+        "step":   step,
+        "best_val": best_val,
+        "val_checks_without_improvement": val_checks_without_improvement,
+        "swa_started": swa_started,
+    }
+    if cosine_scheduler is not None:
+        payload["cosine_scheduler"] = cosine_scheduler.state_dict()
+    if swa_scheduler is not None:
+        payload["swa_scheduler"] = swa_scheduler.state_dict()
+    if swa_model is not None:
+        payload["swa_model"] = swa_model.state_dict()
+    torch.save(payload, path)
 
 
 def _config_to_dict(config: Config) -> dict:
