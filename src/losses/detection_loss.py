@@ -61,15 +61,27 @@ class DetectionLoss(nn.Module):
         pred: torch.Tensor,
         gt: torch.Tensor,
         cell_mask: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         pred, gt = self._align_pred_gt(pred, gt)
         
         # Linajea's logic: weight pixels based on GT cutoff (0.01)
         # gt is Gaussian blob, so <0.01 is background
-        weight = torch.where(gt < 0.01, self.w_bg, self.w_fg)
+        is_bg = gt < 0.01
+        is_fg = ~is_bg
+        
+        weight = torch.where(is_bg, self.w_bg, self.w_fg)
         
         diff2 = (pred - gt) ** 2
-        return (weight * diff2).mean()
+        
+        total_pixels = float(diff2.numel())
+        
+        loss_ci = (weight * diff2).mean()
+        
+        # Additive components of loss_ci
+        loss_bg = (self.w_bg * diff2[is_bg]).sum() / total_pixels if is_bg.any() else torch.tensor(0.0, device=pred.device)
+        loss_fg = (self.w_fg * diff2[is_fg]).sum() / total_pixels if is_fg.any() else torch.tensor(0.0, device=pred.device)
+        
+        return loss_ci, loss_bg, loss_fg
 
     def _calc_mv_loss(self, pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor, pred_indicator: torch.Tensor | None = None) -> torch.Tensor:
         if mask.sum() == 0:
@@ -142,7 +154,7 @@ class DetectionLoss(nn.Module):
         cell_mask = targets["cell_mask"]
         maxima = outputs.get("maxima")
 
-        loss_ci = self.cell_indicator_loss(pred_ci, gt_ci, cell_mask)
+        loss_ci, loss_bg, loss_fg = self.cell_indicator_loss(pred_ci, gt_ci, cell_mask)
         loss_mv, loss_la, loss_lb, alpha = self.movement_vector_loss(
             pred_mv,
             gt_mv,
@@ -154,6 +166,8 @@ class DetectionLoss(nn.Module):
         return {
             "loss": total,
             "loss_ci": loss_ci.detach(),
+            "loss_bg": loss_bg.detach(),
+            "loss_fg": loss_fg.detach(),
             "loss_mv": loss_mv.detach(),
             "loss_la": loss_la.detach(),
             "loss_lb": loss_lb.detach(),
