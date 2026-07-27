@@ -112,7 +112,7 @@ def validate(
 ) -> dict[str, float]:
     model.eval()
     totals: dict[str, float] = {
-        "loss": 0.0, "loss_ci": 0.0, "loss_mv": 0.0,
+        "loss": 0.0, "loss_ci": 0.0, "loss_bg": 0.0, "loss_fg": 0.0, "loss_mv": 0.0,
         "loss_la": 0.0, "loss_lb": 0.0, "alpha": 0.0
     }
     n = 0
@@ -250,7 +250,7 @@ def train(config: Config, resume_path: str | None = None) -> None:
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.training.epochs}")
         # Training metrics accumulators
-        epoch_train_losses = {"loss": 0.0, "loss_ci": 0.0, "loss_mv": 0.0, "loss_la": 0.0, "loss_lb": 0.0, "alpha": 0.0}
+        epoch_train_losses = {"loss": 0.0, "loss_ci": 0.0, "loss_bg": 0.0, "loss_fg": 0.0, "loss_mv": 0.0, "loss_la": 0.0, "loss_lb": 0.0, "alpha": 0.0}
         n_batches = 0
 
         accum_steps = max(1, getattr(config.training, "gradient_accumulation_steps", 1))
@@ -285,10 +285,6 @@ def train(config: Config, resume_path: str | None = None) -> None:
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
 
-                # SWA parameter averaging
-                if swa_started:
-                    swa_model.update_parameters(model)
-
                 global_step += 1
 
             for k in epoch_train_losses:
@@ -298,6 +294,8 @@ def train(config: Config, resume_path: str | None = None) -> None:
             pbar.set_postfix(
                 loss=f"{losses['loss']:.4f}",
                 ci  =f"{losses['loss_ci']:.4f}",
+                bg  =f"{losses.get('loss_bg', 0.0):.4f}",
+                fg  =f"{losses.get('loss_fg', 0.0):.4f}",
                 mv  =f"{losses['loss_mv']:.4f}",
                 lr  =f"{optimizer.param_groups[0]['lr']:.2e}",
             )
@@ -309,7 +307,7 @@ def train(config: Config, resume_path: str | None = None) -> None:
                 latest_val_m = val_m
                 print(
                     f"\n  [step {global_step}] val loss={val_m['loss']:.4f} "
-                    f"ci={val_m['loss_ci']:.4f} mv={val_m['loss_mv']:.4f} "
+                    f"ci={val_m['loss_ci']:.4f} bg={val_m.get('loss_bg', 0.0):.4f} fg={val_m.get('loss_fg', 0.0):.4f} mv={val_m['loss_mv']:.4f} "
                     f"la={val_m.get('loss_la', 0.0):.4f} lb={val_m.get('loss_lb', 0.0):.4f} alpha={val_m.get('alpha', 0.0):.4f}"
                 )
                 if val_m["loss"] < best_val:
@@ -334,8 +332,8 @@ def train(config: Config, resume_path: str | None = None) -> None:
         # ---- end of epoch ----
         avg_train = {k: v / max(n_batches, 1) for k, v in epoch_train_losses.items()}
         print(f"\nEpoch {epoch + 1} Summary:")
-        print(f"  Train: Loss={avg_train['loss']:.4f}, CI={avg_train['loss_ci']:.4f}, MV={avg_train['loss_mv']:.4f}, LA={avg_train['loss_la']:.4f}, LB={avg_train['loss_lb']:.4f}, Alpha={avg_train['alpha']:.4f}")
-        print(f"  Val  : Loss={latest_val_m['loss']:.4f}, CI={latest_val_m['loss_ci']:.4f}, MV={latest_val_m['loss_mv']:.4f}, LA={latest_val_m.get('loss_la', 0.0):.4f}, LB={latest_val_m.get('loss_lb', 0.0):.4f}, Alpha={latest_val_m.get('alpha', 0.0):.4f}")
+        print(f"  Train: Loss={avg_train['loss']:.4f}, CI={avg_train['loss_ci']:.4f}, BG={avg_train.get('loss_bg', 0.0):.4f}, FG={avg_train.get('loss_fg', 0.0):.4f}, MV={avg_train['loss_mv']:.4f}, LA={avg_train['loss_la']:.4f}, LB={avg_train['loss_lb']:.4f}, Alpha={avg_train['alpha']:.4f}")
+        print(f"  Val  : Loss={latest_val_m['loss']:.4f}, CI={latest_val_m['loss_ci']:.4f}, BG={latest_val_m.get('loss_bg', 0.0):.4f}, FG={latest_val_m.get('loss_fg', 0.0):.4f}, MV={latest_val_m['loss_mv']:.4f}, LA={latest_val_m.get('loss_la', 0.0):.4f}, LB={latest_val_m.get('loss_lb', 0.0):.4f}, Alpha={latest_val_m.get('alpha', 0.0):.4f}")
 
         # Save to CSV
         csv_path = ckpt_dir / "training_log.csv"
@@ -344,15 +342,18 @@ def train(config: Config, resume_path: str | None = None) -> None:
             writer = csv.writer(f)
             if write_header:
                 writer.writerow([
-                    "epoch", "train_loss", "val_loss", "val_loss_ci", "val_loss_mv", "lr",
-                    "train_loss_ci", "train_loss_mv", "train_loss_la", "train_loss_lb", "train_alpha",
-                    "val_loss_la", "val_loss_lb", "val_alpha"
+                    "epoch", "train_loss", "train_loss_ci", "train_loss_bg", "train_loss_fg", 
+                    "train_loss_mv", "train_loss_la", "train_loss_lb", "train_alpha", 
+                    "val_loss", "val_loss_ci", "val_loss_bg", "val_loss_fg", 
+                    "val_loss_mv", "val_loss_la", "val_loss_lb", "val_alpha", "lr"
                 ])
             writer.writerow([
                 epoch + 1,
-                avg_train['loss'], latest_val_m['loss'], latest_val_m['loss_ci'], latest_val_m['loss_mv'], optimizer.param_groups[0]['lr'],
-                avg_train['loss_ci'], avg_train['loss_mv'], avg_train['loss_la'], avg_train['loss_lb'], avg_train['alpha'],
-                latest_val_m.get('loss_la', 0.0), latest_val_m.get('loss_lb', 0.0), latest_val_m.get('alpha', 0.0)
+                avg_train['loss'], avg_train['loss_ci'], avg_train.get('loss_bg', 0.0), avg_train.get('loss_fg', 0.0),
+                avg_train['loss_mv'], avg_train['loss_la'], avg_train['loss_lb'], avg_train['alpha'],
+                latest_val_m['loss'], latest_val_m['loss_ci'], latest_val_m.get('loss_bg', 0.0), latest_val_m.get('loss_fg', 0.0),
+                latest_val_m['loss_mv'], latest_val_m.get('loss_la', 0.0), latest_val_m.get('loss_lb', 0.0), latest_val_m.get('alpha', 0.0),
+                optimizer.param_groups[0]['lr']
             ])
             
         # Update metrics graph
@@ -401,6 +402,10 @@ def train(config: Config, resume_path: str | None = None) -> None:
             swa_scheduler.step()
         else:
             cosine_scheduler.step()
+            
+        # SWA parameter averaging (ONCE PER EPOCH)
+        if swa_started:
+            swa_model.update_parameters(model)
 
         # Epoch-level checkpoint (every 10 epochs or last)
         if (epoch + 1) % 10 == 0 or epoch == config.training.epochs - 1:
