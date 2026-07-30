@@ -38,6 +38,7 @@ class DataConfig:
 @dataclass
 class TrainingConfig:
     lr: float = 1e-4
+    eta_min: float = 1e-6          # floor LR for CosineAnnealingLR
     batch_size: int = 2
     gradient_accumulation_steps: int = 1
     epochs: int = 100

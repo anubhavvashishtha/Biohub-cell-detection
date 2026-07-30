@@ -24,7 +24,8 @@ data:
   input_shape: [16, 128, 128]
 
 training:
-  lr: 1.0e-4
+  lr: 1.5e-4
+  eta_min: 8.0e-5        # cosine floor — decay from 1.5e-4 to 8e-5 over T_max epochs
   batch_size: 4
   gradient_accumulation_steps: 2
   epochs: 100

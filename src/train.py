@@ -176,7 +176,7 @@ def train(config: Config, resume_path: str | None = None) -> None:
     cosine_scheduler = CosineAnnealingLR(
         optimizer,
         T_max=n_non_swa_epochs,
-        eta_min=config.training.lr * 0.01,
+        eta_min=getattr(config.training, "eta_min", config.training.lr * 0.01),
     )
 
     # SWA components
