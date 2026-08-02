@@ -122,7 +122,7 @@ class DetectionLoss(nn.Module):
         mode = self.vector_mask_mode
         if mode == "curriculum":
             diff = float(self.current_epoch - self.curriculum_epoch)
-            alpha = 1.0 / (1.0 + torch.exp(torch.tensor(0.5 * diff))).item()
+            alpha = 0.8 / (1.0 + torch.exp(torch.tensor(0.5 * diff))).item()
             loss_mv = alpha * loss_la + (1.0 - alpha) * loss_lb
         elif mode == "maxima":
             alpha = 0.0

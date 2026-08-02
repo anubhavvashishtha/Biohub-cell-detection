@@ -165,10 +165,10 @@ def train(config: Config, resume_path: str | None = None) -> None:
     )
 
     # --- optimizer + schedulers ---
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=config.training.lr,
-        weight_decay=config.training.weight_decay,
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=config.training.lr, 
+        weight_decay=getattr(config.training, "weight_decay", 1e-4)
     )
 
     # Cosine annealing over the non-SWA phase
